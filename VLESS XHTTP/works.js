@@ -5,7 +5,7 @@ const proxyIP = 'pyip.ygkkk.dpdns.org';               // 备用 ProxyIP
 
 // 优选节点/域名列表（用于生成订阅）
 const cfipList = [ 
-    'mfa.gov.ua', 'saas.sin.fan', 'store.ubi.com', 'www.visa.cn', 
+    'mfa.gov.ua', 'saas.sin.fan', 'store.ubi.com', 'staticdelivery.nexusmods.com', 
     'store.ubi.com', 'cf.090227.xyz', 'ipv4.eee.xx.kg', 'cdns.doon.eu.org'
 ]; 
 
