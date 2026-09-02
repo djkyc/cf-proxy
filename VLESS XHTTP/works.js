@@ -1,12 +1,12 @@
 import { connect } from 'cloudflare:sockets';
 
-const yourUUID = '4bcd2896-8b29-4e11-b6ec-d038af37e400'; // 你的 UUID
-const proxyIP = 'ProxyIP.HK.CMLiussss.net';               // 备用 ProxyIP
+const yourUUID = '4bcd2896-8b29-4e11-b6ec-d038af37e480'; // 你的 UUID
+const proxyIP = 'pyip.ygkkk.dpdns.org';               // 备用 ProxyIP
 
-// 优选节点/域名列表
+// 优选节点/域名列表（用于生成订阅）
 const cfipList = [ 
-    'mfa.gov.ua', 'saas.sin.fan', 'store.ubi.com', 'cf.130519.xyz', 
-    'cf.008500.xyz', 'cf.090227.xyz', 'www.visa.cn', 'cdns.doon.eu.org'
+    'mfa.gov.ua', 'saas.sin.fan', 'store.ubi.com', 'www.visa.cn', 
+    'store.ubi.com', 'cf.090227.xyz', 'ipv4.eee.xx.kg', 'cdns.doon.eu.org'
 ]; 
 
 const ADDRESS_TYPE_IPV4 = 1, ADDRESS_TYPE_URL = 2, ADDRESS_TYPE_IPV6 = 3;
@@ -42,21 +42,33 @@ async function read_header(readable, uuid_str) {
     const reader = readable.getReader();
     try {
         let cache = await readBytes(reader, new Uint8Array(0), 18);
-        if (cache.length < 18) { reader.releaseLock(); return null; }
+        if (cache.length < 18) {
+            reader.releaseLock();
+            return null;
+        }
 
         const version = cache[0];
         const id = cache.slice(1, 17);
         const uuid = parse_uuid(uuid_str);
-        if (!validate_uuid(id, uuid)) { reader.releaseLock(); return null; }
+        if (!validate_uuid(id, uuid)) {
+            reader.releaseLock();
+            return null;
+        }
 
         const pb_len = cache[17];
         const addr_plus1 = 1 + 16 + 1 + pb_len + 1 + 2 + 1;
 
         cache = await readBytes(reader, cache, addr_plus1);
-        if (cache.length < addr_plus1) { reader.releaseLock(); return null; }
+        if (cache.length < addr_plus1) {
+            reader.releaseLock();
+            return null;
+        }
 
         const cmd = cache[1 + 16 + 1 + pb_len];
-        if (cmd !== 1) { reader.releaseLock(); return null; }
+        if (cmd !== 1) { 
+            reader.releaseLock();
+            return null;
+        }
 
         const port = (cache[addr_plus1 - 3] << 8) + cache[addr_plus1 - 2];
         const atype = cache[addr_plus1 - 1];
@@ -68,15 +80,24 @@ async function read_header(readable, uuid_str) {
             header_len = addr_plus1 + 16;
         } else if (atype === ADDRESS_TYPE_URL) {
             cache = await readBytes(reader, cache, addr_plus1 + 1);
-            if (cache.length < addr_plus1 + 1) { reader.releaseLock(); return null; }
+            if (cache.length < addr_plus1 + 1) {
+                reader.releaseLock();
+                return null;
+            }
             const domainLen = cache[addr_plus1];
             header_len = addr_plus1 + 1 + domainLen;
         }
 
-        if (header_len < 0) { reader.releaseLock(); return null; }
+        if (header_len < 0) {
+            reader.releaseLock();
+            return null;
+        }
 
         cache = await readBytes(reader, cache, header_len);
-        if (cache.length < header_len) { reader.releaseLock(); return null; }
+        if (cache.length < header_len) {
+            reader.releaseLock();
+            return null;
+        }
 
         let hostname = '';
         const idx = addr_plus1;
@@ -93,7 +114,10 @@ async function read_header(readable, uuid_str) {
             hostname = ipv6.join(':');
         }
 
-        if (!hostname) { reader.releaseLock(); return null; }
+        if (!hostname) {
+            reader.releaseLock();
+            return null;
+        }
 
         const data = cache.slice(header_len);
         return { hostname, port, data, resp: new Uint8Array([version, 0]), reader };
@@ -136,6 +160,7 @@ async function handle_post(request, cfg) {
         return null;
     }
 
+    // 上行流处理
     (async () => {
         let writer = null;
         try {
@@ -158,9 +183,14 @@ async function handle_post(request, cfg) {
         }
     })();
 
+    // 下行流处理
     const transformStream = new TransformStream({
-        start(controller) { controller.enqueue(httpx.resp); },
-        transform(chunk, controller) { controller.enqueue(chunk); }
+        start(controller) {
+            controller.enqueue(httpx.resp);
+        },
+        transform(chunk, controller) {
+            controller.enqueue(chunk);
+        }
     });
 
     remote.readable.pipeTo(transformStream.writable).catch(() => {
@@ -178,12 +208,14 @@ async function handle_post(request, cfg) {
     });
 }
 
-//生成单个 VLESS XHTTP 链接
-function generate_vless_link(uuid, hostname, port, path, currentHost) {
+// ==================== 订阅生成模块 ====================
+
+// 生成单节点 VLESS XHTTP 链接
+function generate_link(uuid, hostname, port, path, sni, currentHost) {
     const params = new URLSearchParams({
         encryption: 'none',
         security: 'tls',
-        sni: currentHost,
+        sni: sni || currentHost,
         fp: 'chrome',
         alpn: 'h2',
         type: 'xhttp',
@@ -194,15 +226,50 @@ function generate_vless_link(uuid, hostname, port, path, currentHost) {
     return `vless://${uuid}@${hostname}:${port}?${params.toString()}#XHTTP-${hostname}`;
 }
 
-// 格式 1: Base64 格式 (通用)
-function get_base64_sub(uuid, nodes, port, path, currentHost) {
-    const links = nodes.map(h => generate_vless_link(uuid, h, port, path, currentHost)).join('\n');
+// 1. 通用 Base64 订阅 (V2Ray / Shadowrocket / PassWall)
+function generate_v2ray_sub(uuid, nodes, port, path, currentHost) {
+    const links = nodes.map(h => generate_link(uuid, h, port, path, currentHost, currentHost)).join('\n');
     return btoa(links);
 }
 
-// 格式 2: Clash Meta (Mihomo) 配置格式
-function get_clash_sub(uuid, nodes, port, path, currentHost) {
-    const proxies = nodes.map((h) => `  - name: "XHTTP-${h}"
+// 2. Sing-Box 配置文件订阅 (JSON)
+function generate_singbox_sub(uuid, nodes, port, path, currentHost) {
+    const outbounds = nodes.map(h => ({
+        type: "vless",
+        tag: `XHTTP-${h}`,
+        server: h,
+        server_port: port,
+        uuid: uuid,
+        tls: {
+            enabled: true,
+            server_name: currentHost,
+            utls: { enabled: true, fingerprint: "chrome" }
+        },
+        transport: {
+            type: "xhttp",
+            host: currentHost,
+            path: path.startsWith('/') ? path : `/${path}`,
+            mode: "stream-one"
+        }
+    }));
+
+    const config = {
+        outbounds: [
+            {
+                type: "selector",
+                tag: "节点选择",
+                outbounds: outbounds.map(o => o.tag)
+            },
+            ...outbounds,
+            { type: "direct", tag: "direct" }
+        ]
+    };
+    return JSON.stringify(config, null, 2);
+}
+
+// 3. Clash Meta / Mihomo 配置文件订阅 (YAML)
+function generate_clash_sub(uuid, nodes, port, path, currentHost) {
+    const proxies = nodes.map(h => `  - name: "XHTTP-${h}"
     type: vless
     server: ${h}
     port: ${port}
@@ -211,14 +278,11 @@ function get_clash_sub(uuid, nodes, port, path, currentHost) {
     tls: true
     servername: ${currentHost}
     client-fingerprint: chrome
-    alpn:
-      - h2
     network: xhttp
     xhttp-opts:
-      mode: stream-one
-      path: ${path}
-      headers:
-        Host: ${currentHost}`).join('\n');
+      path: "${path.startsWith('/') ? path : '/' + path}"
+      host: "${currentHost}"
+      mode: stream-one`).join('\n');
 
     const proxyNames = nodes.map(h => `      - "XHTTP-${h}"`).join('\n');
 
@@ -233,42 +297,12 @@ proxy-groups:
     type: select
     proxies:
 ${proxyNames}
+      - DIRECT
 rules:
   - MATCH,节点选择`;
 }
 
-// 格式 3: Sing-Box 配置格式
-function get_singbox_sub(uuid, nodes, port, path, currentHost) {
-    const outbounds = nodes.map(h => ({
-        type: "vless",
-        tag: `XHTTP-${h}`,
-        server: h,
-        server_port: port,
-        uuid: uuid,
-        flow: "",
-        tls: {
-            enabled: true,
-            server_name: currentHost,
-            utls: { enabled: true, fingerprint: "chrome" },
-            alpn: ["h2"]
-        },
-        transport: {
-            type: "xhttp",
-            host: currentHost,
-            path: path,
-            mode: "stream-one"
-        }
-    }));
-
-    const config = {
-        outbounds: [
-            ...outbounds,
-            { type: "direct", tag: "direct" },
-            { type: "dns", tag: "dns-out" }
-        ]
-    };
-    return JSON.stringify(config, null, 2);
-}
+// ==================== Worker 主入口 ====================
 
 export default {
     async fetch(request) {
@@ -285,128 +319,168 @@ export default {
         // 2. 处理订阅/网页 GET 请求
         if (request.method === 'GET') {
             const path = url.pathname;
-            const userAgent = (request.headers.get('User-Agent') || '').toLowerCase();
-            const targetParam = url.searchParams.get('target')?.toLowerCase();
+            const target = url.searchParams.get('target') || url.searchParams.get('app');
 
-            // 订阅接口: /sub/UUID
+            // 订阅接口判断 (/sub/UUID)
             if (path.toLowerCase() === `/sub/${yourUUID}`) {
-                const currentHost = url.hostname;
-
-                // 优先根据 URL 参数判断，其次根据 User-Agent 智能判断
-                if (targetParam === 'clash' || userAgent.includes('clash') || userAgent.includes('mihomo')) {
-                    return new Response(get_clash_sub(cfg.UUID, cfipList, 443, '/', currentHost), {
-                        headers: { 'Content-Type': 'text/yaml; charset=utf-8' }
+                if (target === 'singbox') {
+                    return new Response(generate_singbox_sub(cfg.UUID, cfipList, 443, '/', url.hostname), {
+                        headers: {
+                            'Content-Type': 'application/json; charset=utf-8',
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        }
                     });
-                } 
-                if (targetParam === 'singbox' || userAgent.includes('sing-box') || userAgent.includes('singbox')) {
-                    return new Response(get_singbox_sub(cfg.UUID, cfipList, 443, '/', currentHost), {
-                        headers: { 'Content-Type': 'application/json; charset=utf-8' }
+                } else if (target === 'clash' || target === 'clashmeta') {
+                    return new Response(generate_clash_sub(cfg.UUID, cfipList, 443, '/', url.hostname), {
+                        headers: {
+                            'Content-Type': 'text/yaml; charset=utf-8',
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        }
+                    });
+                } else {
+                    // 默认 Base64 (V2Ray/Shadowrocket)
+                    return new Response(generate_v2ray_sub(cfg.UUID, cfipList, 443, '/', url.hostname), {
+                        headers: {
+                            'Content-Type': 'text/plain; charset=utf-8',
+                            'Cache-Control': 'no-cache, no-store, must-revalidate'
+                        }
                     });
                 }
-
-                // 默认返回 Base64 订阅 (v2rayN, Shadowrocket, Passwall 等)
-                return new Response(get_base64_sub(cfg.UUID, cfipList, 443, '/', currentHost), {
-                    headers: { 'Content-Type': 'text/plain; charset=utf-8' }
-                });
             }
 
-            // Web 面板页面: /UUID
+            // UUID 仪表盘页面
             if (path.includes(cfg.UUID)) {
                 const baseUrl = `https://${url.hostname}`;
-                const subUrlBase64 = `${baseUrl}/sub/${yourUUID}`;
-                const subUrlClash = `${baseUrl}/sub/${yourUUID}?target=clash`;
-                const subUrlSingbox = `${baseUrl}/sub/${yourUUID}?target=singbox`;
+                const subV2ray = `${baseUrl}/sub/${yourUUID}`;
+                const subSingbox = `${baseUrl}/sub/${yourUUID}?target=singbox`;
+                const subClash = `${baseUrl}/sub/${yourUUID}?target=clash`;
 
-                const html = `<!DOCTYPE html>
-<html lang="zh-CN">
+                const vlessLinks = cfipList.map(h => generate_link(cfg.UUID, h, 443, '/', url.hostname, url.hostname));
+
+                return new Response(
+                    `<!DOCTYPE html>
+<html>
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>VLESS XHTTP 订阅管理</title>
+    <title>VLESS XHTTP 订阅控制中心</title>
+    <!-- 引入前端二维码生成库 -->
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; color: #333; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .card { background: #fff; padding: 24px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.06); margin-bottom: 20px; }
-        h2 { margin-top: 0; color: #1677ff; border-bottom: 2px solid #e8e8e8; padding-bottom: 10px; font-size: 20px; }
-        .sub-group { margin-bottom: 16px; }
-        .sub-title { font-weight: bold; margin-bottom: 6px; font-size: 14px; color: #555; }
-        .box { background: #f9f9f9; border: 1px solid #e5e5e5; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 13px; word-break: break-all; margin-bottom: 8px; }
-        .btn-group { display: flex; gap: 8px; }
-        button { background: #1677ff; color: #fff; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-        button:hover { background: #4096ff; }
-        button.btn-qr { background: #52c41a; }
-        button.btn-qr:hover { background: #73d13d; }
-        
-        /* 弹窗样式 */
-        .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; }
-        .modal-content { background: #fff; padding: 20px; border-radius: 12px; text-align: center; max-width: 300px; width: 100%; }
-        .modal-content img { width: 200px; height: 200px; margin: 15px 0; }
-        .close-btn { background: #ff4d4f; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; color: #333; }
+        .card { max-width: 750px; margin: 20px auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+        h2 { color: #1890ff; margin-top: 0; border-bottom: 2px solid #e8e8e8; padding-bottom: 10px; }
+        .item-group { margin-bottom: 25px; }
+        label { font-weight: bold; display: block; margin-bottom: 8px; color: #555; }
+        .box { background: #fafafa; border: 1px solid #d9d9d9; padding: 12px; border-radius: 6px; word-break: break-all; font-family: monospace; font-size: 13px; margin-bottom: 8px; }
+        .btn-group { display: flex; gap: 10px; }
+        button { background: #1890ff; color: #fff; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: background 0.3s; }
+        button:hover { background: #40a9ff; }
+        button.sec { background: #52c41a; }
+        button.sec:hover { background: #73d13d; }
+        #qrcode-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+        .modal-content { background: #fff; padding: 25px; border-radius: 12px; text-align: center; max-width: 320px; width: 90%; }
+        #qrcode { margin: 15px auto; display: flex; justify-content: center; }
+        select { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid #d9d9d9; margin-bottom: 10px; font-family: monospace; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="card">
-            <h2>各客户端专属订阅链接</h2>
-            
-            <div class="sub-group">
-                <div class="sub-title">1. 通用订阅 (v2rayN / Shadowrocket / Passwall)</div>
-                <div class="box">${subUrlBase64}</div>
-                <div class="btn-group">
-                    <button onclick="copyTxt('${subUrlBase64}')">复制链接</button>
-                    <button class="btn-qr" onclick="showModal('https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(subUrlBase64)}', '通用订阅二维码')">二维码</button>
-                </div>
-            </div>
+    <div class="card">
+        <h2>VLESS XHTTP 订阅与管理中心</h2>
 
-            <div class="sub-group">
-                <div class="sub-title">2. Clash Meta (Mihomo) 订阅</div>
-                <div class="box">${subUrlClash}</div>
-                <div class="btn-group">
-                    <button onclick="copyTxt('${subUrlClash}')">复制链接</button>
-                    <button class="btn-qr" onclick="showModal('https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(subUrlClash)}', 'Clash 订阅二维码')">二维码</button>
-                </div>
+        <div class="item-group">
+            <label>1. Universal / V2Ray / Shadowrocket 订阅地址：</label>
+            <div class="box" id="sub-v2ray">${subV2ray}</div>
+            <div class="btn-group">
+                <button onclick="copyText('${subV2ray}')">复制链接</button>
+                <button class="sec" onclick="showQR('${subV2ray}', 'V2Ray / Universal 订阅二维码')">显示二维码</button>
             </div>
+        </div>
 
-            <div class="sub-group">
-                <div class="sub-title">3. Sing-Box 订阅</div>
-                <div class="box">${subUrlSingbox}</div>
-                <div class="btn-group">
-                    <button onclick="copyTxt('${subUrlSingbox}')">复制链接</button>
-                    <button class="btn-qr" onclick="showModal('https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(subUrlSingbox)}', 'Sing-Box 订阅二维码')">二维码</button>
-                </div>
+        <div class="item-group">
+            <label>2. Sing-Box 订阅地址 (JSON)：</label>
+            <div class="box" id="sub-singbox">${subSingbox}</div>
+            <div class="btn-group">
+                <button onclick="copyText('${subSingbox}')">复制链接</button>
+                <button class="sec" onclick="showQR('${subSingbox}', 'Sing-Box 订阅二维码')">显示二维码</button>
+            </div>
+        </div>
+
+        <div class="item-group">
+            <label>3. Clash Meta / Mihomo 订阅地址 (YAML)：</label>
+            <div class="box" id="sub-clash">${subClash}</div>
+            <div class="btn-group">
+                <button onclick="copyText('${subClash}')">复制链接</button>
+                <button class="sec" onclick="showQR('${subClash}', 'Clash Meta 订阅二维码')">显示二维码</button>
+            </div>
+        </div>
+
+        <div class="item-group">
+            <label>4. 单节点明文导入与扫码：</label>
+            <select id="node-select">
+                ${vlessLinks.map((link, idx) => `<option value="${link}">节点 ${idx + 1}: ${cfipList[idx]}</option>`).join('')}
+            </select>
+            <div class="btn-group">
+                <button onclick="copySelectedNode()">复制选中的节点</button>
+                <button class="sec" onclick="showSelectedNodeQR()">扫码导入节点</button>
             </div>
         </div>
     </div>
 
-    <!-- 二维码 Modal -->
-    <div id="qrModal" class="modal">
-        <div class="modal-content">
-            <h3 id="modalTitle" style="margin:0;font-size:16px;">订阅二维码</h3>
-            <img id="qrImg" src="" alt="QR Code">
-            <div>
-                <button class="close-btn" onclick="hideModal()">关闭</button>
-            </div>
+    <!-- 二维码弹窗 -->
+    <div id="qrcode-modal" onclick="closeQR(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <h3 id="qr-title" style="margin-top:0; font-size: 16px;">二维码扫码</h3>
+            <div id="qrcode"></div>
+            <button onclick="closeQR()">关闭</button>
         </div>
     </div>
 
     <script>
-        function copyTxt(text) {
-            navigator.clipboard.writeText(text).then(() => alert('已复制到剪贴板'));
+        let qrObj = null;
+
+        function copyText(text) {
+            navigator.clipboard.writeText(text).then(() => alert('已成功复制到剪贴板'));
         }
-        function showModal(imgSrc, title) {
-            document.getElementById('qrImg').src = imgSrc;
-            document.getElementById('modalTitle').innerText = title;
-            document.getElementById('qrModal').style.display = 'flex';
+
+        function copySelectedNode() {
+            const val = document.getElementById('node-select').value;
+            copyText(val);
         }
-        function hideModal() {
-            document.getElementById('qrModal').style.display = 'none';
+
+        function showQR(text, title) {
+            document.getElementById('qr-title').innerText = title || '扫码导入';
+            const container = document.getElementById('qrcode');
+            container.innerHTML = '';
+            
+            qrObj = new QRCode(container, {
+                text: text,
+                width: 200,
+                height: 200,
+                correctLevel: QRCode.CorrectLevel.L
+            });
+
+            document.getElementById('qrcode-modal').style.display = 'flex';
+        }
+
+        function showSelectedNodeQR() {
+            const val = document.getElementById('node-select').value;
+            const sel = document.getElementById('node-select');
+            const nodeName = sel.options[sel.selectedIndex].text;
+            showQR(val, nodeName);
+        }
+
+        function closeQR(e) {
+            document.getElementById('qrcode-modal').style.display = 'none';
         }
     </script>
 </body>
-</html>`;
-                return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+</html>`,
+                    { headers: { 'Content-Type': 'text/html; charset=utf-8' } }
+                );
             }
 
+            // 首页提示
             return new Response('VLESS XHTTP Worker is Running.', { status: 200 });
         }
 
