@@ -25,3 +25,4 @@ cf works VLESS XHTTP
 动态生成二维码：支持手机端（如 小火箭/NekoBox）直接扫码添加订阅或单个节点。
 ````
 ---
+<img width="498" height="507" alt="image" src="https://github.com/user-attachments/assets/65f504ab-8967-4130-a4bc-a625a1e8df1d" />
