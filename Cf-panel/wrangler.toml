@@ -1,0 +1,35 @@
+# cf-hub：cf-deploy-panel + Tunnel 面板 + UsagePanel 合一（一个 Worker，一个登录）
+# 部署：npx wrangler deploy
+# 或用 npm run build 生成 dist/_worker.js，粘贴到 Dashboard 创建的 Worker 里（仍需在 Dashboard 配好下面的变量与绑定）。
+name = "cf-hub"
+main = "src/worker.js"
+compatibility_date = "2026-01-20"
+
+[vars]
+USERNAME = "admin"
+ACCOUNT_CHECK_INTERVAL_MINUTES = 20
+
+# UsagePanel 的存储：变量名必须是 KV，存 usage.json / usage_config.json
+[[kv_namespaces]]
+binding = "KV"
+id = "FILL_USAGE_KV_ID"
+
+# Tunnel 面板的状态存储。推荐与上面用同一个 KV 命名空间 ID（键名不冲突：
+# Usage 用 usage.json / usage_config.json，Tunnel 用 meta:* / tunnel:state:* / chat:*），
+# 也可以另外建一个 KV 命名空间填这里。
+[[kv_namespaces]]
+binding = "TUNNEL_STATE"
+id = "FILL_USAGE_KV_ID"
+
+# Tunnel 面板推荐用 D1（读写频繁，KV 有最终一致延迟）。建库后执行：
+#   CREATE TABLE IF NOT EXISTS state (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+# 有 D1 时优先用 D1，没有就回落到上面的 TUNNEL_STATE。没有 D1 也不想配时，把下面三行删掉。
+[[d1_databases]]
+binding = "TUNNEL_DB"
+database_name = "tunnel-state"
+database_id = "FILL_D1_ID_OR_REMOVE_THIS_BLOCK"
+
+# 定时：每 5 分钟同时驱动 Tunnel 在线检查与 Usage 刷新。
+# Tunnel 每周巡检、Usage 单账号刷新间隔都在代码内有门控，不会多跑。
+[triggers]
+crons = ["*/5 * * * *"]
