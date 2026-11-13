@@ -23,8 +23,18 @@ async function getParams(request) {
 }
 
 export default {
-    // 阿里云 ESA 标准参数顺序：(request, context, env)
-    async fetch(request, context, env) {
+    // 智能自适应入口：同时完美兼容 ESA 与 Cloudflare 不同的参数顺序
+    async fetch(request, arg2, arg3) {
+        let env, ctx;
+        // 自动识别当前运行环境
+        if (arg3 && (arg3.API_TOKEN !== undefined || typeof arg3.fetch === 'function' || !arg2?.waitUntil)) {
+            env = arg3; // 阿里云 ESA 环境
+            ctx = arg2;
+        } else {
+            env = arg2; // Cloudflare 环境
+            ctx = arg3;
+        }
+
         const url = new URL(request.url);
         
         // 1. 终端皮肤页面 (/skin)
@@ -129,7 +139,7 @@ export default {
             return new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
         }
 
-        // 3. 微信发信核心接口 (/wxsend)
+        // 3. 微信发信核心接口 (/wxsend) - 带有 5 秒自动超时与连接断开保护
         if (url.pathname === '/wxsend') {
             const params = await getParams(request);
             const { content, title } = params;
@@ -149,13 +159,19 @@ export default {
             }
 
             try {
-                // 获取微信 Access Token
+                // 5 秒超时保护机制
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 5000);
+
                 const tokenRes = await fetch('https://api.weixin.qq.com/cgi-bin/stable_token', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json;charset=utf-8' },
-                    body: JSON.stringify({ grant_type: 'client_credential', appid, secret, force_refresh: false })
+                    body: JSON.stringify({ grant_type: 'client_credential', appid, secret, force_refresh: false }),
+                    signal: controller.signal
                 });
                 const tokenData = await tokenRes.json();
+                clearTimeout(timeoutId);
+
                 if (!tokenData.access_token) {
                     return new Response(JSON.stringify({ msg: 'Failed to get WeChat access token', detail: tokenData }), { status: 500, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
                 }
@@ -165,17 +181,26 @@ export default {
                 const userList = useridStr.split('|').map(u => u.trim()).filter(Boolean);
 
                 const results = await Promise.all(userList.map(async (touser) => {
-                    const sendRes = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${tokenData.access_token}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json;charset=utf-8' },
-                        body: JSON.stringify({
-                            touser,
-                            template_id,
-                            url: `${base_url}${sep}message=${encodeURIComponent(content)}&date=${encodeURIComponent(beijingTime)}&title=${encodeURIComponent(title)}`,
-                            data: { title: { value: title }, content: { value: content } }
-                        })
-                    });
-                    return await sendRes.json();
+                    const sendCtrl = new AbortController();
+                    const sendTimeout = setTimeout(() => sendCtrl.abort(), 5000);
+                    try {
+                        const sendRes = await fetch(`https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${tokenData.access_token}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json;charset=utf-8' },
+                            body: JSON.stringify({
+                                touser,
+                                template_id,
+                                url: `${base_url}${sep}message=${encodeURIComponent(content)}&date=${encodeURIComponent(beijingTime)}&title=${encodeURIComponent(title)}`,
+                                data: { title: { value: title }, content: { value: content } }
+                            }),
+                            signal: sendCtrl.signal
+                        });
+                        clearTimeout(sendTimeout);
+                        return await sendRes.json();
+                    } catch (err) {
+                        clearTimeout(sendTimeout);
+                        return { errcode: -1, errmsg: 'Request timeout or aborted' };
+                    }
                 }));
 
                 return new Response(JSON.stringify({ msg: 'Success', results }), { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } });
@@ -184,6 +209,6 @@ export default {
             }
         }
 
-        return new Response('WXPush Service Running', { status: 200 });
+        return new Response('WXPush Service Running (Universal Smart Mode)', { status: 200 });
     }
 };
