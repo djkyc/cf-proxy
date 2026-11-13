@@ -170,7 +170,14 @@ class EsaKV {
 }
 
 export default {
-  async fetch(request, env, ctx) {
+  async fetch(request, arg2, arg3) {
+    // Cloudflare: fetch(request, env, ctx)；阿里云 ESA: fetch(request, context, env)
+    // 两家 env 的位置不一样：CF 在第 2 个参数，ESA 在第 3 个参数。
+    // 之前按 CF 写法在 ESA 上拿到的 env 其实是 context，env.API_TOKEN 是 undefined，
+    // 所以 /history、测试页、/wxsend 永远报 Invalid token。这里把第 2、3 个参数合并，
+    // 带 API_TOKEN/WX_APPID 等键的那个就是真正的 env，两边都能用。
+    const env = { ...(arg2 && typeof arg2 === 'object' ? arg2 : {}), ...(arg3 && typeof arg3 === 'object' ? arg3 : {}) };
+    const ctx = arg3;
     const url = new URL(request.url);
 
     if (url.pathname === '/skin' || url.pathname === '/skin/') {
