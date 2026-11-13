@@ -686,7 +686,10 @@ export default {
     return new Response('Not Found', { status: 404 });
   },
 
-  async scheduled(event, env, ctx) {
+  async scheduled(event, arg2, arg3) {
+    // 与 fetch 一样：CF 是 (event, env, ctx)，ESA 是 (event, context, env)，合并后两边都能读到 env
+    const env = { ...(arg2 && typeof arg2 === 'object' ? arg2 : {}), ...(arg3 && typeof arg3 === 'object' ? arg3 : {}) };
+    const ctx = arg3;
     if (!env.ALIVE_DAYS) {
       return;
     }
